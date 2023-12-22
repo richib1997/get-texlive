@@ -1,0 +1,99 @@
+#!/bin/bash
+
+red='\e[31m'
+green='\e[32m'
+yellow='\e[33m'
+normal='\e[0m'
+rule="$(printf '%.0s_' $(seq 80))"
+
+function logmsg {
+    length=${#1}
+    left=$(((80-length)/2))
+    [ $left -lt 0 ] && left=0
+    right=$((left + length))
+    echo -e "$yellow${rule::left}${1::80}${rule:right}$normal"
+}
+
+function handle_error {
+    echo -e "${red}An error occured during the installation process!${normal}"
+    echo -e "$red> $1$normal"
+    read -r -p 'For more details, see the error log above. Press Enter to exit...' _
+    exit 1
+}
+
+if [ "$EUID" -ne 0 ]; then
+    sudo "$(realpath "$0")" || exit 1
+else
+    read -r -p "This script will remove pre-existent versions of TeX \
+        Live to install the newest available. Press Enter to continue, \
+        otherwise press Ctrl-C..." _
+
+    trap 'handle_error $BASH_COMMAND' ERR
+
+    logmsg 'Deleting older versions'
+    find /usr/local/texlive -maxdepth 1 -type d -name '[0-9]*' -exec rm -rf {} +
+    find "/home/$SUDO_USER" -maxdepth 1 -type d -name '.texlive[0-9]*' -exec rm -rf {} +
+    echo -e "${green}Done!${normal}"
+
+    logmsg 'Installing TeX Live'
+    apt install -y perl-tk perl-doc
+    cd "$(mktemp -d)"
+    wget 'http://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz' -O install-tl-unx.tar.gz
+    tar -xf install-tl-unx.tar.gz
+    cat << 'EOF' > texlive.profile
+selected_scheme scheme-full
+instopt_adjustpath 0
+instopt_adjustrepo 1
+instopt_letter 0
+instopt_portable 0
+instopt_write18_restricted 1
+tlpdbopt_autobackup 1
+tlpdbopt_backupdir tlpkg/backups
+tlpdbopt_create_formats 1
+tlpdbopt_desktop_integration 1
+tlpdbopt_file_assocs 1
+tlpdbopt_generate_updmap 0
+tlpdbopt_install_docfiles 1
+tlpdbopt_install_srcfiles 1
+tlpdbopt_post_code 1
+tlpdbopt_sys_bin /usr/local/bin
+tlpdbopt_sys_info /usr/local/share/info
+tlpdbopt_sys_man /usr/local/share/man
+tlpdbopt_w32_multi_user 1
+EOF
+    "$(find ./ -type f -name 'install-tl' | head -1)" --profile texlive.profile --no-interaction
+    echo -e "${green}Done!${normal}"
+
+    logmsg 'Creating symlink to the bin directory'
+    mkdir -p /opt
+    ln -sf "$(find /usr/local/texlive -maxdepth 1 -type d -name '[0-9]*')/bin/x86_64-linux" /opt/texbin
+    echo -e "${green}Done!${normal}"
+
+    logmsg 'Installing fonts'
+    cp "$(/opt/texbin/kpsewhich -var-value TEXMFSYSVAR)/fonts/conf/texlive-fontconfig.conf" /etc/fonts/conf.d/09-texlive.conf
+    fc-cache -fsv
+    echo -e "${green}Done!${normal}"
+
+    logmsg 'Configuring the environment'
+    [ ! -f /etc/profile.d/texlive.sh ] && echo 'export PATH=/opt/texbin:${PATH}' > /etc/profile.d/texlive.sh
+    alias mktexlsr > /dev/null 2>&1 || echo "alias mktexlsr='sudo /opt/texbin/mktexlsr'" >> "/home/$SUDO_USER/.bash_aliases"
+    alias updmap-sys > /dev/null 2>&1 || echo "alias updmap-sys='sudo /opt/texbin/updmap-sys'" >> "/home/$SUDO_USER/.bash_aliases"
+    alias fmtutil-sys > /dev/null 2>&1 || echo "alias fmtutil-sys='sudo /opt/texbin/fmtutil-sys'" >> "/home/$SUDO_USER/.bash_aliases"
+    alias sutlmgr > /dev/null 2>&1 || echo "alias sutlmgr='sudo /opt/texbin/tlmgr -gui'" >> "/home/$SUDO_USER/.bash_aliases"
+    echo -e "${green}Done!${normal}"
+
+    logmsg 'Cleaning up'
+    apt autopurge -y perl-doc
+    echo -e "${green}Done!${normal}"
+
+    clear
+    echo -e "${green}Installation completed!${normal}"
+    cat << 'EOF'
+Note: run 'sutlmgr' to execute the TeX Live manager, useful to update 
+the distribution packages. If it crashes on update, probably you need to
+update it by running 'sutlmgr update --self'. Other useful aliases:
+mktexlsr, updmap-sys, fmtutil-sys.
+EOF
+    read -r -p 'Press Enter to logout or Ctrl-C to do it later...' _
+    loginctl terminate-user "$SUDO_USER"
+fi
