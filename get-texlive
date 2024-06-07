@@ -1,69 +1,71 @@
 #!/bin/bash
 
-red='\e[31m'
+red="\e[31m"
 green='\e[32m'
 yellow='\e[33m'
-igreen='\033[42;30;1m'
-iyellow='\033[43;30:1m'
+igreen='\e[42;30;1m'
+iyellow='\e[43;30:1m'
 normal='\e[0m'
+
+set -e
 
 function heading {
     local msg=" $1 "
-    if [ -n "$2" ]; then
-        local mode="$2"
-    else
-        local mode=0
-    fi
+    if [ -n "$2" ]; then mode="$2"; else mode=0; fi
     # shellcheck disable=SC2155
     local max=$(tput cols)
     local center=${#msg}
     local left=$(((max - center) / 2))
     [ $left -lt 0 ] && left=0
-    local right=$((left + center))
+    local right=$((max - center - left))
 
     case $mode in
         0)
-            # shellcheck disable=SC2155
-            local rule="$(printf '%.0s=' $(seq "$max"))"
-            echo -e "\n$yellow${rule::left}$msg${rule:right}$normal"
+            left="$(printf '%.0s=' $(seq "$left"))"
+            right="$(printf '%.0s=' $(seq "$right"))"
+            echo -e "\n$yellow$left$msg$right$normal"
+            sleep 3
             ;;
         1)
-            # shellcheck disable=SC2155
-            local rule="$(printf '%.0s ' $(seq "$max"))"
-            echo -e "\n$igreen${rule::left}$msg${rule:right}$normal"
+            left="$(printf '%.0s ' $(seq "$left"))"
+            right="$(printf '%.0s ' $(seq "$right"))"
+            echo -e "$igreen$left$msg$right$normal"
             ;;
         2)
-            # shellcheck disable=SC2155
-            local rule="$(printf '%.0s ' $(seq "$max"))"
-            echo -e "\n$iyellow${rule::left}$msg${rule:right}$normal"
+            left="$(printf '%.0s ' $(seq "$left"))"
+            right="$(printf '%.0s ' $(seq "$right"))"
+            echo -e "$iyellow$left$msg$right$normal"
             ;;
     esac
-    sleep 3
 }
 
-function error_handler {
-    echo -e "${red}An error occured during the installation process!${normal}"
-    echo -e "${red}(Line $1) Command: $2 ${normal}"
-    read -r -p 'For more details, see the error log above. Press Enter to exit... '
-    exit 1
+function install_requirements {
+    if command -v apt > /dev/null 2>&1; then
+        echo "apt-get is available (Debian/Ubuntu based systems)"
+        apt install -y perl-tk perl-doc wget
+    elif command -v pacman > /dev/null 2>&1; then
+        echo "pacman is available (Arch Linux based systems)"
+        pacman -S --noconfirm perl-tk perl wget
+    else
+        echo "No known package manager found!"
+        exit 1
+    fi
 }
 
-if [ "$EUID" -ne 0 ]; then
+if [ "$(id -u)" -ne 0 ]; then
     echo -e "${red}Root privileges required!${normal}"
     sudo "$(realpath "$0")" || exit 1
 else
     clear
     heading 'Warning!' 2
-    fold -sw "$(( $(tput cols) - 10 ))" << EOF | sed "s/^/     /g"
+    fold -sw "$(($(tput cols) - 10))" << EOF | sed 's/^/     /g'
 
-Welcome to the TeX Live installation wizard! 
+Welcome to TeX Live installation wizard!
 This script will remove any previously installed distribution of TeX \
-Live installed, in order to install the most recent one.
+Live, in order to install the latest release.
 
 EOF
     read -r -p 'Press Enter to continue, otherwise hit Ctrl-C... '
-
-    trap 'error_handler $LINENO $BASH_COMMAND' ERR
 
     heading 'Deleting older versions of TeX Live'
     find /usr/local/texlive -maxdepth 1 -type d -name '[0-9]+' -print -exec rm -rf {} +
@@ -71,7 +73,7 @@ EOF
     echo -e "${green}Done!${normal}"
 
     heading 'Installing requirements'
-    apt install -y perl-tk perl-doc wget
+    install_requirements
     echo -e "${green}Done!${normal}"
 
     heading 'Downloading and extracting the installer'
@@ -117,25 +119,21 @@ EOF
     heading 'Configuring the environment'
     # shellcheck disable=SC2016
     [ ! -f /etc/profile.d/texlive.sh ] && echo 'export PATH=/opt/texbin:${PATH}' > /etc/profile.d/texlive.sh
-    alias mktexlsr > /dev/null 2>&1 || echo "alias mktexlsr='sudo /opt/texbin/mktexlsr'" >> "/home/$SUDO_USER/.bash_aliases"
-    alias updmap-sys > /dev/null 2>&1 || echo "alias updmap-sys='sudo /opt/texbin/updmap-sys'" >> "/home/$SUDO_USER/.bash_aliases"
-    alias fmtutil-sys > /dev/null 2>&1 || echo "alias fmtutil-sys='sudo /opt/texbin/fmtutil-sys'" >> "/home/$SUDO_USER/.bash_aliases"
-    alias sutlmgr > /dev/null 2>&1 || echo "alias sutlmgr='sudo /opt/texbin/tlmgr -gui'" >> "/home/$SUDO_USER/.bash_aliases"
-    echo -e "${green}Done!${normal}"
-
-    heading 'Cleaning up'
-    apt autopurge -y perl-doc
+    alias mktexlsr > /dev/null 2>&1 || echo "alias mktexlsr='sudo /opt/texbin/mktexlsr'" >> "/home/$SUDO_USER/.bashrc"
+    alias updmap-sys > /dev/null 2>&1 || echo "alias updmap-sys='sudo /opt/texbin/updmap-sys'" >> "/home/$SUDO_USER/.bashrc"
+    alias fmtutil-sys > /dev/null 2>&1 || echo "alias fmtutil-sys='sudo /opt/texbin/fmtutil-sys'" >> "/home/$SUDO_USER/.bashrc"
+    alias sutlmgr > /dev/null 2>&1 || echo "alias sutlmgr='sudo /opt/texbin/tlmgr -gui'" >> "/home/$SUDO_USER/.bashrc"
     echo -e "${green}Done!${normal}"
 
     clear
     heading 'Installation completed' 1
-    fold -sw "$(( $(tput cols) - 10 ))" << EOF | sed "s/^/     /g"
+    fold -sw "$(( $(tput cols) - 10 ))" << EOF | sed 's/^/     /g'
 
 Run 'sutlmgr' to execute the TeX Live manager, a useful tool to keep \
 the packages of the installed distribution up-to-date. If it crashes \
 on update, probably you need to update the tool itself by running \
 'sutlmgr update --self'. Other useful aliases: mktexlsr, updmap-sys, \
-fmtutil-sys. To complete the installation, please logout.
+fmtutil-sys. To complete the installation, please log out.
 
 EOF
     read -r -p 'Press Enter to logout or Ctrl-C to do it later... '
