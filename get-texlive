@@ -4,6 +4,7 @@ green='\e[32m'
 end='\e[0m'
 
 set -e
+shopt -s checkwinsize
 
 function heading {
     local msg=" $1 "
