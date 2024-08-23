@@ -193,8 +193,10 @@ EOF
     done_msg
 
     heading 'Installing fonts'
+    echo 'Copying configuration...'
     cp -vf "$(/opt/texbin/kpsewhich -var-value TEXMFSYSVAR)/fonts/conf/texlive-fontconfig.conf" /etc/fonts/conf.d/09-texlive.conf
     changes+="${nl}Created file /etc/fonts/conf.d/09-texlive.conf"
+    echo 'Updating font cache...'
     fc-cache -rfs
     changes+="${nl}Updated font cache"
     done_msg
