@@ -1,70 +1,244 @@
-#!/bin/bash
+#!/bin/env bash
 
 tlinstall_url='http://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz'
-bashrc="/home/$SUDO_USER/.bashrc"
-item=$'\n  - '
+bashrc="/home/${SUDO_USER}/.bashrc"
 
-set -e
+tmp_dir="$(mktemp -d)"
+texlive_dir=''
+changelog=''
+item=$'\n  \u2022 '
+
+set -eEo pipefail
 shopt -s checkwinsize
 
-function exists_cmd {
-    command -v "$1" > /dev/null 2>&1
-}
-
-function exists_alias {
-    sudo -u "$SUDO_USER" -i -- bash -i -c "alias $1 > /dev/null 2>&1" 
-}
-
-function title {
+title() {
     local color="\e[47;30;1m"
     OPTIND=1
     while getopts ":0123" opt; do
-        case "$opt" in
+        case "${opt}" in
             0)  color="\e[47;30;1m" ;; # Log
             1)  color="\e[42;30;1m" ;; # Success
             2)  color="\e[43;30;1m" ;; # Warning
             3)  color="\e[41;30;1m" ;; # Error
-            \?) echo "Invalid option: -$OPTARG" >&2; exit 1 ;;
-         esac
+            \?) echo "Invalid option: -${OPTARG}" >&2; exit 1 ;;
+        esac
     done
     shift $((OPTIND - 1))
 
-    local max
-    max=$(tput cols)
-    local text 
-    text="$(printf "%b" "$1" | fold -sw "$max")"
-    
     while IFS= read -r line; do
         local center=${#line}
-        local left=$(((max - center) / 2))
-        [ $left -lt 0 ] && left=0
-        local right=$((max - center - left))
-        left="$(printf '%.0s ' $(seq "$left"))"
-        right="$(printf '%.0s ' $(seq "$right"))"
-        echo -e "$color$left$line$right\e[0m"
-    done <<< "$text"
+        (( left = ( COLUMNS - center ) / 2 ))
+        (( right = COLUMNS - center - left ))
+        left="$(printf '%*s' ${left})"
+        right="$(printf '%*s' ${right})"
+        printf '%b\n' "${color}${left}${line}${right}\e[0m"
+    done <<< "$(printf '%b' "$1" | fmt -uw ${COLUMNS})"
 
-    if [ "$color" == "\e[47;30;1m" ]; then sleep 3; fi
+    if [ "${color}" == "\e[47;30;1m" ]; then sleep 3; fi
 }
 
-function page {
+page() {
     clear
     title "$@"
-    echo
-    fold -sw "$(( $(tput cols) - 10 ))" | sed 's/^/     /g'
-    echo
+    printf '\n'
+    fmt -u | sed "s/^/$(printf "%$(( ( COLUMNS - 75 ) / 2 ))s")/g"
+    printf '\n'
 }
 
+exists_cmd() {
+    command -v "$1" > /dev/null 2>&1
+}
+
+exists_alias() {
+    sudo -u "${SUDO_USER}" -i -- bash -i -c "alias $1 > /dev/null 2>&1"
+}
+
+check_requirements() {
+    title 'Requirements check'
+
+    if exists_cmd apt-get; then
+        echo 'apt-get detected (Debian/Ubuntu based system)'
+        local install_pkg='apt install -y'
+    elif exists_cmd pacman; then
+        echo 'pacman detected (Arch based system)'
+        local install_pkg='pacman -S --noconfirm'
+    else
+        printf '\e[31mError: distro not supported!\e[0m'
+        exit 1
+    fi
+
+    if ! exists_cmd wget; then
+        echo 'Installing wget...'
+        eval "${install_pkg} wget" > /dev/null 2>&1
+        changelog+="${item}Installed wget package"
+    else
+        echo 'wget already installed!'
+    fi
+
+    if ! exists_cmd perl; then
+        echo 'Installing perl-tk...'
+        eval "${install_pkg} perl-tk" > /dev/null 2>&1
+        changelog+="${item}Installed perl-tk package"
+    else
+        echo 'perl-tk already installed!'
+    fi
+}
+
+clean_older_versions() {
+    if [ -d /usr/local/texlive ]; then
+        title 'Deleting older versions of TeX Live (with user data)'
+
+        # Installation directories
+        while IFS= read -r year_dir; do
+            echo "Removing ${year_dir}"
+            rm -rf "${year_dir}"
+            changelog+="${item}Removed directory ${year_dir}"
+        done <<< "$(find /usr/local/texlive -maxdepth 1 -type d -name '[0-9]*')"
+
+        # User data directories
+        while IFS= read -r year_dir; do
+            echo "Removing ${year_dir}"
+            rm -rf "${year_dir}"
+            changelog+="${item}Removed directory ${year_dir}"
+        done <<< "$(find "/home/${SUDO_USER}" -maxdepth 1 -type d -name '.texlive[0-9]*')"
+    fi
+}
+
+install_texlive() {
+    title 'Installation'
+
+    cd "${tmp_dir}"
+    echo 'Downloading the installer...'
+    wget -nv --show-progress "${tlinstall_url}" -O install-tl-unx.tar.gz
+    echo 'Extracting the installer...'
+    tar -xf install-tl-unx.tar.gz --strip-components=1
+    {
+        echo "selected_scheme scheme-full"
+        echo "instopt_adjustpath 0"
+        echo "instopt_adjustrepo 1"
+        echo "instopt_letter 0"
+        echo "instopt_portable 0"
+        echo "instopt_write18_restricted 1"
+        echo "tlpdbopt_autobackup 1"
+        echo "tlpdbopt_backupdir tlpkg/backups"
+        echo "tlpdbopt_create_formats 1"
+        echo "tlpdbopt_desktop_integration 1"
+        echo "tlpdbopt_file_assocs 1"
+        echo "tlpdbopt_generate_updmap 0"
+        echo "tlpdbopt_install_docfiles 1"
+        echo "tlpdbopt_install_srcfiles 1"
+        echo "tlpdbopt_post_code 1"
+        echo "tlpdbopt_sys_bin /usr/local/bin"
+        echo "tlpdbopt_sys_info /usr/local/share/info"
+        echo "tlpdbopt_sys_man /usr/local/share/man"
+        echo "tlpdbopt_w32_multi_user 1"
+    } > texlive.profile
+    perl ./install-tl --profile texlive.profile --no-interaction
+    texlive_dir="$(find /usr/local/texlive -maxdepth 1 -type d -name '[0-9]*' | head -1)"
+    changelog+="${item}Installed texlive to ${texlive_dir}"
+}
+
+config_environment() {
+    title 'Environment configuration'
+
+    if [ ! -d /opt ]; then
+        echo 'Creating directory /opt...'
+        mkdir /opt
+        changelog+="${item}Created directory /opt"
+    else
+        echo '/opt directory already exists!'
+    fi
+
+    if [ ! -e /opt/texbin ] || [ ! -L /opt/texbin ]; then
+        echo 'Creating symlink to the texbin directory...'
+        ln -sf "${texlive_dir}/bin/$(uname -p)-linux" /opt/texbin
+        changelog+="${item}Added symlink /opt/texbin -> $(readlink /opt/texbin)"
+    else
+        echo '/opt/texbin symlink already exists!'
+    fi
+
+    if [ ! -f /etc/profile.d/texlive.sh ]; then 
+        echo 'Adding /opt/texbin to PATH...'
+        # shellcheck disable=SC2016
+        echo 'export PATH=/opt/texbin:${PATH}' > /etc/profile.d/texlive.sh
+        changelog+="${item}Created file /etc/profile.d/texlive.sh"
+    else
+        echo '/etc/profile.d/texlive.sh already exists!'
+    fi
+
+    if ! exists_alias mktexlsr; then
+        echo 'Adding alias mktexlsr...'
+        echo "alias mktexlsr='sudo /opt/texbin/mktexlsr'" >> "${bashrc}"
+        changelog+="${item}Added alias 'mktexlsr' to ${bashrc}"
+    else
+        echo 'mktexlsr alias already configured!'
+    fi
+
+    if ! exists_alias updmap-sys; then
+        echo 'Adding alias mktexlsr...'
+        echo "alias updmap-sys='sudo /opt/texbin/updmap-sys'" >> "${bashrc}"
+        changelog+="${item}Added alias 'updmap-sys' to ${bashrc}"
+    else
+        echo 'updmap-sys alias already configured!'
+    fi
+
+    if ! exists_alias fmtutil-sys; then
+        echo 'Adding alias fmtutil-sys...'
+        echo "alias fmtutil-sys='sudo /opt/texbin/fmtutil-sys'" >> "${bashrc}"
+        changelog+="${item}Added alias 'fmtutil-sys' to ${bashrc}"
+    else
+        echo 'fmtutil-sys alias already configured!'
+    fi
+
+    if ! exists_alias sutlmgr; then
+        echo 'Adding alias sutlmgr...'
+        echo "alias sutlmgr='sudo /opt/texbin/tlmgr -gui'" >> "${bashrc}"
+        changelog+="${item}Added alias 'sutlmgr' to ${bashrc}"
+    else
+        echo 'sutlmgr alias already configured!'
+    fi
+}
+
+install_fonts() {
+    title 'Installing fonts'
+
+    local texmfsysvar
+    texmfsysvar="$(/opt/texbin/kpsewhich -var-value TEXMFSYSVAR)"
+    cp -vf "${texmfsysvar}/fonts/conf/texlive-fontconfig.conf" /etc/fonts/conf.d/09-texlive.conf
+    changelog+="${item}Created file /etc/fonts/conf.d/09-texlive.conf"
+    fc-cache -rfs
+    changelog+="${item}Updated font cache"
+}
+
+error() {
+    if [ "$?" -ne 130 ]; then
+        title -3 'An error occured! Please see the log above.'
+        read -rp 'Press Enter to exit... '
+    fi
+}
+
+cleanup() {
+    echo 'Cleaning up...'
+    rm -rf "${tmp_dir}" > /dev/null 2>&1
+    tput rmcup
+}
 
 # ================================ Main ============================== #
-if [ "$(id -u)" -ne 0 ]; then
-    title -2 'Root privileges required!'
-    sudo -k "$(realpath "$0")" "$@"
-    exit $?
+trap 'exit 130' INT
+trap 'error' ERR
+trap 'cleanup' EXIT
+tput smcup
+clear
+
+if [ "${EUID}" -ne 0 ]; then
+    if exists_cmd sudo; then
+        title -2 'Root privileges required!'
+        sudo -k "$0" "$@"
+    else
+        title -3 'This script must be run as root'
+        exit 1
+    fi
 fi
-
-trap "title -3 'An error occured! Please see the log above.'" ERR
-
 
 if [ -n "$1" ]; then
     tlinstall_url="$1"
@@ -76,175 +250,32 @@ Welcome to the TeX Live installation wizard!
 This script will remove any previously installed distribution of TeX \
 Live, in order to install the latest release.
 
-Mirror: $tlinstall_url
+Mirror: ${tlinstall_url}
 EOF
 read -rp 'Press Enter to continue, otherwise hit Ctrl-C... '
+clear
 # -------------------------------------------------------------------- #
 
-clear
-changes=""
-
-title 'Requirements check'
-
-if exists_cmd apt-get; then
-    echo 'apt-get detected (Debian/Ubuntu based system)'
-    install_pkg='apt install -y'
-elif exists_cmd pacman; then
-    echo 'pacman detected (Arch based system)'
-    install_pkg='pacman -S --noconfirm'
-else
-    echo -e '\e[31mDistro not supported!\e[0m'
-    exit 1
-fi
-
-if ! exists_cmd wget; then
-    echo 'Installing wget...'
-    eval "$install_pkg wget" > /dev/null
-    changes+="${item}Installed wget package"
-else
-    echo 'wget already installed!'
-fi
-
-if ! exists_cmd perl; then
-    echo 'Installing perl...'
-    eval "$install_pkg perl-tk" > /dev/null
-    changes+="${item}Installed perl-tk package"
-else
-    echo 'perl-tk already installed!'
-fi
-
-if [ -d /usr/local/texlive ]; then
-    title 'Deleting older versions of TeX Live'
-    # Installation directories
-    while IFS= read -r year_dir; do
-        echo "Removing $year_dir"
-        rm -rf "$year_dir"
-        changes+="${item}Removed directory $year_dir"
-    done < <(find /usr/local/texlive -maxdepth 1 -type d -name '[0-9]*')
-    # User data directories
-    while IFS= read -r year_dir; do
-        echo "Removing $year_dir"
-        rm -rf "$year_dir"
-        changes+="${item}Removed directory $year_dir"
-    done < <(find "/home/$SUDO_USER" -maxdepth 1 -type d -name '.texlive[0-9]*')
-fi
-
-title 'Installation'
-
-tmp_dir="$(mktemp -d)"
-cd "$tmp_dir"
-echo "Downloading the installer..."
-wget -nv --show-progress "$tlinstall_url" -O install-tl-unx.tar.gz
-echo 'Extracting the installer...'
-tar -xf install-tl-unx.tar.gz --strip-components=1
-cat << 'EOF' > texlive.profile
-selected_scheme scheme-full
-instopt_adjustpath 0
-instopt_adjustrepo 1
-instopt_letter 0
-instopt_portable 0
-instopt_write18_restricted 1
-tlpdbopt_autobackup 1
-tlpdbopt_backupdir tlpkg/backups
-tlpdbopt_create_formats 1
-tlpdbopt_desktop_integration 1
-tlpdbopt_file_assocs 1
-tlpdbopt_generate_updmap 0
-tlpdbopt_install_docfiles 1
-tlpdbopt_install_srcfiles 1
-tlpdbopt_post_code 1
-tlpdbopt_sys_bin /usr/local/bin
-tlpdbopt_sys_info /usr/local/share/info
-tlpdbopt_sys_man /usr/local/share/man
-tlpdbopt_w32_multi_user 1
-EOF
-"./install-tl" --profile texlive.profile --no-interaction
-texlive_dir="$(find /usr/local/texlive -maxdepth 1 -type d -name '[0-9]*' | head -1)"
-changes+="${item}Installed texlive to $texlive_dir"
-
-title 'Environment configuration'
-
-if [ ! -d /opt ]; then
-    echo 'Creating directory /opt...'
-    mkdir /opt
-    changes+="${item}Created directory /opt"
-else
-    echo '/opt directory already exists!'
-fi
-
-if [ ! -e /opt/texbin ] || [ ! -L /opt/texbin ]; then
-    echo 'Creating symlink to the texbin directory...'
-    ln -sf "$texlive_dir/bin/$(uname -p)-linux" /opt/texbin
-    changes+="${item}Added symlink /opt/texbin -> $(readlink /opt/texbin)"
-else
-    echo '/opt/texbin symlink already exists!'
-fi
-
-if [ ! -f /etc/profile.d/texlive.sh ]; then 
-    echo 'Adding /opt/texbin to PATH...'
-    # shellcheck disable=SC2016
-    echo 'export PATH=/opt/texbin:${PATH}' > /etc/profile.d/texlive.sh
-    changes+="${item}Created file /etc/profile.d/texlive.sh"
-else
-    echo '/etc/profile.d/texlive.sh already exists!'
-fi
-
-if ! exists_alias mktexlsr; then
-    echo 'Adding alias mktexlsr...'
-    echo "alias mktexlsr='sudo /opt/texbin/mktexlsr'" >> "$bashrc"
-    changes+="${item}Added alias 'mktklsr' to $bashrc"
-else
-    echo 'mktexlsr alias already configured!'
-fi
-
-if ! exists_alias updmap-sys; then
-    echo 'Adding alias mktexlsr...'
-    echo "alias updmap-sys='sudo /opt/texbin/updmap-sys'" >> "$bashrc"
-    changes+="${item}Added alias 'updmap-sys' to $bashrc"
-else
-    echo 'updmap-sys alias already configured!'
-fi
-
-if ! exists_alias fmtutil-sys; then
-    echo 'Adding alias fmtutil-sys...'
-    echo "alias fmtutil-sys='sudo /opt/texbin/fmtutil-sys'" >> "$bashrc"
-    changes+="${item}Added alias 'fmtutil-sys' to $bashrc"
-else
-    echo 'fmtutil-sys alias already configured!'
-fi
-
-if ! exists_alias sutlmgr; then
-    echo 'Adding alias sutlmgr...'
-    echo "alias sutlmgr='sudo /opt/texbin/tlmgr -gui'" >> "$bashrc"
-    changes+="${item}Added alias 'sutlmgr' to $bashrc"
-else
-    echo 'sutlmgr alias already configured!'
-fi
-
-title 'Installing fonts'
-
-texmfsysvar=$(/opt/texbin/kpsewhich -var-value TEXMFSYSVAR)
-cp -vf "$texmfsysvar/fonts/conf/texlive-fontconfig.conf" /etc/fonts/conf.d/09-texlive.conf
-changes+="${item}Created file /etc/fonts/conf.d/09-texlive.conf"
-fc-cache -rfs
-changes+="${item}Updated font cache"
-
-cd ..
-rm -rf "$tmp_dir"
+check_requirements
+clean_older_versions
+install_texlive
+config_environment
+install_fonts
 
 # --------------------------- Final screen --------------------------- #
 page -1 'Installation completed' << EOF
 Congratulations! TeX Live has been installed successfully, please \
 logout to reload the environment.
 
-Changes: $changes
+Changes: ${changelog}
 
 Run 'sutlmgr' to execute the TeX Live manager, a useful tool to keep \
 the packages of the installed distribution up-to-date. If it crashes \
 on update, probably you need to update the tool itself by running \
 'sutlmgr update --self'.
 EOF
-read -rp 'Press Enter to logout or Ctrl-C to do it later... '
+read -rp 'Press Enter to logout, otherwise hit Ctrl-C to do it later...'
+clear
 # -------------------------------------------------------------------- #
 
-loginctl terminate-user "$SUDO_USER"
+loginctl terminate-user "${SUDO_USER}"
